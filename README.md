@@ -1,17 +1,35 @@
 # 工业过程数字孪生与异常根因推理服务
 
-纯后端 Node.js + TypeScript + Fastify 项目，使用内存状态运行，不依赖 Docker、数据库或消息队列。
+纯后端 Node.js + TypeScript + Fastify 项目，使用本地 JSON 文件快照持久化内存状态，不依赖 Docker、数据库或消息队列。
 
 ## 运行
 
 ```bash
 npm install
 npm test
-npm start
+STATE_FILE=./data/twin-state.json PORT=3100 npm start
 ```
+
+- `STATE_FILE`：状态快照路径（默认 `./data/twin-state.json`）。每次状态变更原子写入，启动时加载。
 
 ## 业务闭环
 
 设备拓扑版本 → 遥测接入 → 时间序列重放 → 阈值异常检测 → 拓扑影响分析 → 根因候选 → 工单状态机 → 审计追踪。
 
 关键不变量：拓扑版本连续且按生效时间选择；遥测事件按业务时间和序列号重放；工单只能沿合法状态机迁移；所有重要操作产生审计记录。
+
+## 事件排序与回放语义
+
+`POST /telemetry` 接受可选的业务 `eventId`（客户端提供或服务端生成）。排序规则是与到达/写入顺序无关的**稳定全序**：
+
+1. **业务时间** `timestamp`（=`observedAt`）——不同时间事件的既有先后关系永不改变；
+2. **同业务时间的系统序列** `timeSequence`——同一 `timestamp` 下按 `eventId` 确定性排序后从 0 连续编号，写入即重建；
+3. `eventId` 作为最终兜底。
+
+`GET /telemetry/replay?from&to` 始终按上述次序输出。保证：
+
+- **乱序提交**：同一批同时间戳事件无论以何种到达顺序写入（含晚到补提交），回放次序一致；
+- **重复查询**：多次回放、多次根因分析返回完全相同的结果；
+- **服务重启**：事件、`timeSequence`、全局到达序列号 `sequence` 与计数器随快照落盘，重载后次序一致，新事件的 `sequence` 单调延续；
+- **幂等去重**：相同 `eventId` 重复提交不会插入额外节点，返回既有事件；
+- **根因稳定**：根因候选按权重降序、同权重按来源节点 ID 排序，`traceId` 由边内容确定性生成。
